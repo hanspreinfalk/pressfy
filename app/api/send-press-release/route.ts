@@ -159,8 +159,8 @@ export async function POST(req: NextRequest) {
   const filename = `${slugify(headline)}.md`;
 
   const results = await Promise.allSettled(
-    recipients.map((journalist) =>
-      resend.emails.send({
+    recipients.map(async (journalist) => {
+      const { data, error } = await resend.emails.send({
         from: process.env.RESEND_FROM_EMAIL ?? "onboarding@resend.dev",
         to: journalist.email,
         subject: headline,
@@ -171,12 +171,41 @@ export async function POST(req: NextRequest) {
             content: attachmentContent,
           },
         ],
-      }),
-    ),
+      });
+
+      if (error) {
+        console.error(`[Pressfy] Resend error for ${journalist.email}:`, error);
+        throw new Error(
+          typeof error === "object" && error !== null && "message" in error
+            ? String((error as { message: unknown }).message)
+            : JSON.stringify(error),
+        );
+      }
+
+      console.log(`[Pressfy] Email sent to ${journalist.email}, id:`, data?.id);
+      return data;
+    }),
   );
 
   const sent = results.filter((r) => r.status === "fulfilled").length;
   const failed = results.filter((r) => r.status === "rejected").length;
+
+  console.log(`[Pressfy] Send complete — sent: ${sent}, failed: ${failed}`);
+
+  if (sent === 0) {
+    const firstError = results.find((r) => r.status === "rejected") as
+      | PromiseRejectedResult
+      | undefined;
+    return NextResponse.json(
+      {
+        error:
+          firstError?.reason instanceof Error
+            ? firstError.reason.message
+            : "All emails failed to send — check your Resend API key and sender address.",
+      },
+      { status: 500 },
+    );
+  }
 
   return NextResponse.json({
     success: true,

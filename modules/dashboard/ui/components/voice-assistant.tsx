@@ -6,7 +6,7 @@ import { useMutation, useQuery } from "convex/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/convex/_generated/api";
-import type { Id } from "@/convex/_generated/dataModel";
+import type { Doc, Id } from "@/convex/_generated/dataModel";
 import {
   AudioLinesIcon,
   CheckIcon,
@@ -38,7 +38,7 @@ type ArticleStatus =
   | "sent"
   | "rejected";
 
-type Industry = "Health" | "Consumer Product";
+type Industry = Doc<"journalists">["industry"];
 
 type TranscriptLine = {
   role: "user" | "assistant";
@@ -52,52 +52,58 @@ Your job is to help the user shape a publication-ready press story. Keep spoken
 responses concise (2-3 sentences) and conversational.
 
 ==========================
-THE createArticle TOOL
+YOUR TWO TOOLS
 ==========================
-You have one tool: createArticle. It takes exactly three required arguments:
+You have exactly two tools:
 
+1. get_industries — returns the live list of journalist verticals available
+   for distribution. You MUST call this before EVERY call to createArticle.
+   It takes no arguments.
+
+2. createArticle — saves a complete press release for the user to review.
+   You MUST only call this after you have already received the response from
+   get_industries and know which industry values are valid.
+
+==========================
+createArticle ARGUMENTS
+==========================
 1. headline (string, non-empty, 10+ characters)
    The press release headline.
 
 2. markdown (string, non-empty, 400+ characters)
-   The COMPLETE press release body written in Markdown. Must contain:
-   - a "# " H1 line that matches the headline
+   The COMPLETE press release body in Markdown. Must contain:
+   - a "# " H1 line matching the headline
    - 3-5 body paragraphs separated by blank lines
-   - at least one "> " blockquote line containing the spokesperson quote
+   - at least one "> " blockquote for the spokesperson quote
 
 3. industries (array of strings)
-   Choose any subset of ["Health", "Consumer Product"] — every industry
-   that genuinely fits the story. Use [] only if neither fits.
-   - "Health" = healthcare, wellness, biotech, medical innovation
-   - "Consumer Product" = consumer goods, retail, DTC brands, product launches
+   Use ONLY values returned by get_industries. Choose every industry that
+   genuinely fits the story. Use [] if none fit.
 
-ABSOLUTE RULES for calling createArticle:
-- Before invoking the tool, you MUST have fully written headline, markdown,
-  and industries in your head. Write the entire markdown article BEFORE
-  emitting the tool call. Never call the tool with an empty object {} or
-  any missing field. Calls with empty arguments are silently rejected.
+ABSOLUTE RULES for createArticle:
+- Always call get_industries first, then createArticle. Never skip this.
+- Have the full headline, markdown, and industries ready before emitting
+  the call. Never submit an empty object {} or any missing field.
 - Make exactly ONE complete call with all three fields populated.
-- Right BEFORE calling the tool, say one short transitional sentence like
-  "Okay, drafting that now." (so the user isn't left in dead silence).
-  Then emit the tool call.
+- Say one short sentence before the get_industries call: "Okay, drafting
+  that now." Then call get_industries, then immediately createArticle.
 
 ==========================
 QUICK-START SHORTCUT
 ==========================
 If the user says any variant of "create an article now", "just make one",
 "use sample data", "demo it", "show me an example", or similar:
-1. Say one short sentence: "Sure — drafting a sample release now."
-2. Compose a complete, believable MOCK press release in your head (invent
-   a company, product, numbers, spokesperson, and quote).
-3. Call createArticle ONCE with all three fields fully filled in.
+1. Say "Sure — drafting a sample release now."
+2. Call get_industries (no arguments).
+3. Using the returned industries, call createArticle with a complete,
+   believable MOCK press release (invent company, product, numbers, quote).
 
 ==========================
 NORMAL CONVERSATION FLOW
 ==========================
-Otherwise, in the first turn, ask which announcement they want to work on
-(launch, raise, hire, partnership, milestone, or something else).
+Otherwise, ask which announcement they want to work on in the first turn.
 
-Then walk them through, in order:
+Then walk them through:
 - The headline angle a journalist would actually open
 - The 2-3 strongest proof points (numbers, customers, named partners)
 - The quoted spokesperson and the one quote that lands
@@ -105,32 +111,29 @@ Then walk them through, in order:
 
 Be opinionated. Push back gently when the angle is weak.
 
-Once you have enough information, say "Okay, drafting that now." and then
-call createArticle with all three required fields fully populated.
+Once you have enough information, say "Okay, drafting that now." then call
+get_industries, then immediately call createArticle.
 
 ==========================
-AFTER THE TOOL RESPONDS
+AFTER createArticle RESPONDS
 ==========================
-When you receive the tool response confirming the article was saved, say:
-"Your press release is ready — take a look at the draft on screen. Approve
-it when you're happy and I'll send it to the right journalists, or tell me
-what to change."
+Say: "Your press release is ready — take a look at the draft on screen.
+Approve it when you're happy and I'll send it to the right journalists,
+or tell me what to change."
 
 ==========================
 HANDLING DISAPPROVAL
 ==========================
 If the system tells you the user disapproved with feedback:
-1. Say one short acknowledgment like "Got it — revising now."
-2. Rewrite the complete article in your head with the feedback applied.
-3. Call createArticle ONCE with all three fields fully repopulated.
+1. Say one short acknowledgment: "Got it — revising now."
+2. Call get_industries, then immediately call createArticle with the full
+   revised article incorporating all feedback.
 
 IMPORTANT: Never send anything to journalists until the user approves on
-screen. The user does the approving via the UI — not by voice.`;
+screen via the UI.`;
 
 const FIRST_MESSAGE =
   "Hey, this is Pressfy. Tell me what you're announcing and I'll help you sharpen the angle in a few minutes. Or just say 'create an article now' and I'll spin up a sample.";
-
-const INDUSTRY_OPTIONS: Industry[] = ["Health", "Consumer Product"];
 
 type CreateArticleArgs = {
   headline: string;
@@ -144,6 +147,11 @@ export function VoiceAssistant() {
   const journalists = React.useMemo(
     () => journalistsRaw ?? [],
     [journalistsRaw],
+  );
+  const industriesRaw = useQuery(api.journalists.getUniqueIndustries);
+  const industryOptions = React.useMemo(
+    () => industriesRaw ?? [],
+    [industriesRaw],
   );
   const createArticleMutation = useMutation(api.articles.create);
   const approveArticleMutation = useMutation(api.articles.approve);
@@ -235,6 +243,20 @@ export function VoiceAssistant() {
           console.log("[Pressfy] tool call received:", toolCall.function.name);
           console.log("[Pressfy] raw arguments:", toolCall.function.arguments);
 
+          if (toolCall.function.name === "get_industries") {
+            const available = industryOptions.slice();
+            console.log("[Pressfy] get_industries returning:", available);
+            v.send({
+              type: "add-message",
+              message: {
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify({ industries: available }),
+              },
+            });
+            return;
+          }
+
           if (toolCall.function.name === "createArticle") {
             setArticleStatus("generating");
             setSendError(null);
@@ -272,7 +294,7 @@ export function VoiceAssistant() {
 
                 const safeIndustries = (parsed.industries ?? []).filter(
                   (i): i is Industry =>
-                    INDUSTRY_OPTIONS.includes(i as Industry),
+                    industryOptions.includes(i as Industry),
                 );
 
                 console.log("[Pressfy] safe industries:", safeIndustries);
@@ -330,7 +352,7 @@ export function VoiceAssistant() {
       vapiRef.current?.stop?.();
       vapiRef.current = null;
     };
-  }, [publicKey, createArticleMutation]);
+  }, [publicKey, createArticleMutation, industryOptions]);
 
   React.useEffect(() => {
     if (status !== "active") return;
@@ -372,9 +394,24 @@ export function VoiceAssistant() {
             {
               type: "function",
               function: {
+                name: "get_industries",
+                description:
+                  "Returns the live list of journalist industry verticals available for press release distribution. Call this before every createArticle call to get the valid industry values.",
+                strict: true,
+                parameters: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {},
+                  required: [],
+                },
+              },
+            },
+            {
+              type: "function",
+              function: {
                 name: "createArticle",
                 description:
-                  "Saves a complete press release for user review. You MUST provide all three arguments fully populated: a non-empty headline string, a multi-paragraph markdown body string, and an industries array. NEVER call this with an empty object.",
+                  "Saves a complete press release for user review. MUST be called after get_industries. Provide all three arguments fully populated. NEVER call with an empty object.",
                 strict: true,
                 parameters: {
                   type: "object",
@@ -383,21 +420,18 @@ export function VoiceAssistant() {
                     headline: {
                       type: "string",
                       description:
-                        "REQUIRED. The press release headline. Must be a non-empty string of at least 10 characters. Example: 'Acme Health Raises $20M Series B to Expand Remote Patient Monitoring'.",
+                        "REQUIRED. The press release headline. Non-empty, 10+ characters.",
                     },
                     markdown: {
                       type: "string",
                       description:
-                        "REQUIRED. The complete press release written as Markdown. Must be a non-empty string of at least 400 characters. Must include: a # H1 headline matching the headline field, 3-5 body paragraphs separated by blank lines, and at least one > blockquote for the spokesperson quote.",
+                        "REQUIRED. The complete press release in Markdown, 400+ characters. Include a # H1 headline, 3-5 body paragraphs, and at least one > blockquote for the spokesperson quote.",
                     },
                     industries: {
                       type: "array",
                       description:
-                        "REQUIRED. Journalist verticals to distribute to. Include every industry that applies. Use [] only if the story genuinely fits neither beat.",
-                      items: {
-                        type: "string",
-                        enum: ["Health", "Consumer Product"],
-                      },
+                        "REQUIRED. Use ONLY values returned by get_industries. Choose every industry that fits the story. Use [] if none fit.",
+                      items: { type: "string" },
                     },
                   },
                   required: ["headline", "markdown", "industries"],
@@ -443,7 +477,15 @@ export function VoiceAssistant() {
   }, []);
 
   const handleApprove = React.useCallback(async () => {
-    if (!articleId || !article) return;
+    if (!articleId || !article) {
+      console.warn("[Pressfy] approve bailed — articleId:", articleId, "article:", article);
+      return;
+    }
+    console.log("[Pressfy] approving article", articleId, {
+      headline: article.headline,
+      industries: article.industries,
+      journalistCount: journalists.length,
+    });
     setSendError(null);
     setArticleStatus("sending");
     try {
@@ -905,13 +947,6 @@ const Transcript = React.forwardRef<
   );
 });
 
-type JournalistRecord = {
-  _id: string;
-  name: string;
-  email: string;
-  industry: Industry;
-};
-
 function ArticlePreview({
   articleStatus,
   headline,
@@ -926,7 +961,7 @@ function ArticlePreview({
   headline: string | null;
   markdown: string | null;
   industries: Industry[];
-  journalists: JournalistRecord[];
+  journalists: Doc<"journalists">[];
   sendError: string | null;
   onApprove: () => void;
   onReject: (feedback: string) => void;
