@@ -1,0 +1,12 @@
+const authConfig = {
+  providers: [
+    {
+      // Configure this value on the Convex Dashboard for the target deployment.
+      // See https://docs.convex.dev/auth/clerk#configuring-dev-and-prod-instances
+      domain: process.env.CLERK_JWT_ISSUER_DOMAIN,
+      applicationID: "convex",
+    },
+  ],
+};
+
+export default authConfig;
