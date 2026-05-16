@@ -3,20 +3,20 @@ import { Resend } from "resend";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-type Industry = "Health" | "Consumer Product";
-
 type Journalist = {
   _id: string;
   name: string;
   email: string;
-  industry: Industry;
+  industry: string;
 };
 
 type Payload = {
   headline: string;
   markdown: string;
-  industries: Industry[];
+  industries: string[];
   journalists: Journalist[];
+  emailSubject?: string;
+  emailIntro?: string;
 };
 
 function renderMarkdownToHtml(markdown: string): string {
@@ -76,8 +76,15 @@ function buildEmailHtml(
   headline: string,
   markdown: string,
   journalist: Journalist,
+  emailIntro?: string,
 ): string {
   const body = renderMarkdownToHtml(markdown);
+  const introHtml = emailIntro
+    ? `<div style="background:#fdf7f2;border-left:4px solid #fd5200;padding:16px 20px;margin:0 0 24px 0;">
+        ${renderMarkdownToHtml(emailIntro)}
+       </div>
+       <hr style="border:none;border-top:2px solid #000;margin:0 0 24px 0;" />`
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -99,6 +106,7 @@ function buildEmailHtml(
         </tr>
         <tr>
           <td style="background:#fff;padding:32px 28px;border:2px solid #000;border-top:none;">
+            ${introHtml}
             <h1 style="margin:0 0 16px 0;font-size:26px;font-weight:700;text-transform:uppercase;line-height:1.15;letter-spacing:-0.02em;">${headline}</h1>
             <hr style="border:none;border-top:2px solid #000;margin:16px 0;" />
             ${body}
@@ -126,7 +134,7 @@ function slugify(text: string): string {
 
 export async function POST(req: NextRequest) {
   const body = (await req.json()) as Payload;
-  const { headline, markdown, industries, journalists } = body;
+  const { headline, markdown, industries, journalists, emailSubject, emailIntro } = body;
 
   if (!headline || !markdown) {
     return NextResponse.json(
@@ -163,8 +171,8 @@ export async function POST(req: NextRequest) {
       const { data, error } = await resend.emails.send({
         from: process.env.RESEND_FROM_EMAIL ?? "onboarding@resend.dev",
         to: journalist.email,
-        subject: headline,
-        html: buildEmailHtml(headline, markdown, journalist),
+        subject: emailSubject ?? headline,
+        html: buildEmailHtml(headline, markdown, journalist, emailIntro),
         attachments: [
           {
             filename,

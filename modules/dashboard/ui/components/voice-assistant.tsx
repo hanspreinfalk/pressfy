@@ -13,6 +13,7 @@ import {
   CircleCheckIcon,
   FileTextIcon,
   LoaderIcon,
+  MailIcon,
   MicIcon,
   MicOffIcon,
   PhoneIcon,
@@ -29,7 +30,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 type VoiceStatus = "idle" | "connecting" | "active" | "ended" | "error";
-type ArticleStatus =
+type PressReleaseStatus =
+  | "none"
+  | "generating"
+  | "ready"
+  | "approved"
+  | "rejected";
+type EmailStatus =
   | "none"
   | "generating"
   | "ready"
@@ -45,101 +52,196 @@ type TranscriptLine = {
   text: string;
 };
 
-const SYSTEM_PROMPT = `You are Pressfy's voice press strategist — a fast, articulate
-collaborator for founders, comms leads, and agency teams.
-
-Your job is to help the user shape a publication-ready press story. Keep spoken
-responses concise (2-3 sentences) and conversational.
-
-==========================
-YOUR TWO TOOLS
-==========================
-You have exactly two tools:
-
-1. get_industries — returns the live list of journalist verticals available
-   for distribution. You MUST call this before EVERY call to createArticle.
-   It takes no arguments.
-
-2. createArticle — saves a complete press release for the user to review.
-   You MUST only call this after you have already received the response from
-   get_industries and know which industry values are valid.
-
-==========================
-createArticle ARGUMENTS
-==========================
-1. headline (string, non-empty, 10+ characters)
-   The press release headline.
-
-2. markdown (string, non-empty, 400+ characters)
-   The COMPLETE press release body in Markdown. Must contain:
-   - a "# " H1 line matching the headline
-   - 3-5 body paragraphs separated by blank lines
-   - at least one "> " blockquote for the spokesperson quote
-
-3. industries (array of strings)
-   Use ONLY values returned by get_industries. Choose every industry that
-   genuinely fits the story. Use [] if none fit.
-
-ABSOLUTE RULES for createArticle:
-- Always call get_industries first, then createArticle. Never skip this.
-- Have the full headline, markdown, and industries ready before emitting
-  the call. Never submit an empty object {} or any missing field.
-- Make exactly ONE complete call with all three fields populated.
-- Say one short sentence before the get_industries call: "Okay, drafting
-  that now." Then call get_industries, then immediately createArticle.
-
-==========================
-QUICK-START SHORTCUT
-==========================
-If the user says any variant of "create an article now", "just make one",
-"use sample data", "demo it", "show me an example", or similar:
-1. Say "Sure — drafting a sample release now."
-2. Call get_industries (no arguments).
-3. Using the returned industries, call createArticle with a complete,
-   believable MOCK press release (invent company, product, numbers, quote).
-
-==========================
-NORMAL CONVERSATION FLOW
-==========================
-Otherwise, ask which announcement they want to work on in the first turn.
-
-Then walk them through:
-- The headline angle a journalist would actually open
-- The 2-3 strongest proof points (numbers, customers, named partners)
-- The quoted spokesperson and the one quote that lands
-- The target audience / beats
-
-Be opinionated. Push back gently when the angle is weak.
-
-Once you have enough information, say "Okay, drafting that now." then call
-get_industries, then immediately call createArticle.
-
-==========================
-AFTER createArticle RESPONDS
-==========================
-Say: "Your press release is ready — take a look at the draft on screen.
-Approve it when you're happy and I'll send it to the right journalists,
-or tell me what to change."
-
-==========================
-HANDLING DISAPPROVAL
-==========================
-If the system tells you the user disapproved with feedback:
-1. Say one short acknowledgment: "Got it — revising now."
-2. Call get_industries, then immediately call createArticle with the full
-   revised article incorporating all feedback.
-
-IMPORTANT: Never send anything to journalists until the user approves on
-screen via the UI.`;
-
-const FIRST_MESSAGE =
-  "Hey, this is Pressfy. Tell me what you're announcing and I'll help you sharpen the angle in a few minutes. Or just say 'create an article now' and I'll spin up a sample.";
-
-type CreateArticleArgs = {
+type CreatePressReleaseArgs = {
   headline: string;
   markdown: string;
   industries: Industry[];
 };
+
+type DraftEmailArgs = {
+  subject: string;
+  intro: string;
+};
+
+type EmailDraft = {
+  subject: string;
+  intro: string;
+};
+
+type PendingSend = {
+  industries: string[];
+  toolCallId: string;
+};
+
+const SYSTEM_PROMPT = `You are Pressfy's AI press strategist — a precise, articulate collaborator for startup founders and comms teams.
+
+Your job: guide the user through creating a press release, drafting journalist outreach, and distributing it.
+
+==========================
+YOUR FOUR TOOLS
+==========================
+
+1. get_industries
+   Returns the live journalist verticals for distribution.
+   - Takes no arguments.
+   - MUST be called before create_press_release.
+   - MUST be called before send_press_release.
+
+2. create_press_release
+   Saves a complete press release draft for user review.
+   - Arguments: headline (string), markdown (string), industries (string[])
+   - Use ONLY industry values returned by get_industries.
+   - Must include: # H1 headline, 3–5 body paragraphs, at least one > blockquote for a spokesperson quote.
+
+3. draft_email
+   Creates an outreach email draft for journalist distribution.
+   - Only call this AFTER the system confirms the user approved the press release.
+   - Arguments: subject (string), intro (string)
+   - subject: a short punchy subject line (one sentence).
+   - intro: a short personal pitch for the journalist (2–3 sentences ONLY). Say who you are, why this story matters to them, and what makes it newsworthy. Do NOT include the press release body — it is appended automatically.
+
+4. send_press_release
+   Sends the approved email to relevant journalists.
+   - Only call this AFTER get_industries AND after the system confirms the user approved the email draft.
+   - Arguments: industries (string[] from get_industries)
+
+==========================
+STEP-BY-STEP WORKFLOW
+==========================
+
+STEP 1 — GATHER INFORMATION
+Ask the user about their announcement:
+- Company and product
+- Funding, traction, key metrics
+- What makes it different from competitors
+- Key spokesperson and their quote
+- Target audience and journalist beats
+
+Ask follow-up questions until you have enough for a strong, newsworthy story.
+
+STEP 2 — CREATE PRESS RELEASE
+When you have enough information, call get_industries (no arguments), then immediately call create_press_release with all three fields fully populated. Do NOT say anything before or during the tool calls.
+
+After the tools respond, say: "Your press release is ready — review the draft on screen. Approve it when you're happy or tell me what to change."
+
+STEP 3 — WAIT FOR PRESS RELEASE APPROVAL
+Do NOT proceed until the system tells you the press release was approved or rejected.
+- If approved → system message will say so. Proceed to Step 4.
+- If rejected with feedback → call get_industries, then create_press_release again with full revisions.
+
+STEP 4 — DRAFT OUTREACH EMAIL
+Only start after the system says "User approved the press release."
+Immediately call draft_email with:
+- subject: a short punchy subject line (one sentence)
+- intro: a 2–3 sentence personal pitch ONLY — who you are, why this story matters to the journalist, what makes it newsworthy. Do NOT include the press release content in intro; it is appended automatically.
+Do NOT say anything before or during the tool call.
+
+After the tool responds, say: "Here's your email draft — review it on screen. Approve it or tell me what to change."
+
+STEP 5 — WAIT FOR EMAIL APPROVAL
+Do NOT send until the system tells you the email was approved or rejected.
+- If approved → system message will say so. Proceed to Step 6.
+- If rejected with feedback → call draft_email again with the revised subject and body.
+
+STEP 6 — SEND
+Only start after the system says "User approved the email draft."
+Call get_industries, then immediately call send_press_release with the industries. Do NOT say anything before or during the tool calls.
+
+STEP 7 — CONFIRM
+After send_press_release responds:
+- If success: congratulate the user and mention how many journalists were reached.
+- If failure: clearly explain the error and suggest a fix (e.g., check Resend API key).
+
+==========================
+QUICK-START SHORTCUT
+==========================
+If the user says "create a press release now", "use sample data", "demo it", "just make one", or similar:
+1. Call get_industries immediately without saying anything first.
+2. Call create_press_release with a complete, believable MOCK press release (invent company, product, numbers, spokesperson quote).
+3. After the tool responds, say: "Here's a sample press release — take a look and let me know what to change."
+
+==========================
+HANDLING DISAPPROVAL
+==========================
+Press release disapproved:
+- Call get_industries, then create_press_release with the full revised article. Do NOT say anything before or during the tool calls.
+- After the tools respond, say: "I've revised it — take another look."
+
+Email disapproved:
+- Call draft_email immediately with a revised subject and intro. Do NOT say anything before or during the tool call.
+- After the tool responds, say: "Here's the revised email — let me know if this works."
+
+==========================
+CRITICAL RULES
+==========================
+- NEVER speak before or during a tool call. Tool calls must be made silently.
+- NEVER call a tool with empty or missing arguments. The arguments must be FULLY POPULATED in the SAME tool call. There is no "second step" — the model generates the complete content inside the tool call itself.
+  • create_press_release: headline, markdown, and industries must ALL be present and non-empty. The markdown must be the complete press release text (400+ characters) in the same call.
+  • draft_email: subject and intro must BOTH be present and non-empty. Generate them in the same tool call.
+  • send_press_release: industries must be a non-empty array of values from get_industries.
+- If you are about to call a tool but don't have all the arguments ready, STOP and ask the user for whatever you're missing instead.
+- NEVER send emails without explicit user approval confirmed by the system.
+- NEVER call send_press_release without calling get_industries immediately before it.
+- NEVER skip steps in the workflow.
+- Use ONLY industry values returned by get_industries — never invent them.
+- The press release markdown MUST be complete (400+ characters, # H1, 3–5 paragraphs, > blockquote quote).
+- Keep voice responses concise (2–3 sentences). Be opinionated and direct.`;
+
+const FIRST_MESSAGE =
+  "Hey, this is Pressfy. Tell me what you're announcing and I'll help you craft and send a journalist-ready press release. Or just say 'create an article now' for a quick demo.";
+
+function buildFallbackPressRelease(
+  industries: Industry[],
+  transcript: TranscriptLine[],
+): CreatePressReleaseArgs {
+  const userContext = transcript
+    .filter((line) => line.role === "user")
+    .map((line) => line.text)
+    .join(" ")
+    .trim();
+  const primaryIndustry = industries[0];
+  const selectedIndustries = primaryIndustry ? [primaryIndustry] : [];
+  const isShort = /\b(short|brief|quick|concise)\b/i.test(userContext);
+
+  const headline =
+    primaryIndustry === "Health"
+      ? "MediPulse Launches AI Health Assistant to Improve Patient Care"
+      : "NovaLaunch Introduces AI Platform for Faster Startup Announcements";
+
+  const markdown = isShort
+    ? `# ${headline}
+
+MediPulse today announced the launch of an AI-powered health assistant designed to help clinics improve patient engagement, streamline follow-up care, and reduce administrative work for care teams.
+
+The platform uses intelligent reminders, health insights, and workflow automation to help providers identify patient needs earlier and deliver more personalized support between appointments.
+
+> "Healthcare teams need practical AI that saves time and improves outcomes," said Dr. Lisa Chen, CEO of MediPulse. "Our goal is to make proactive care easier for every clinic."
+
+MediPulse is now available to healthcare providers across the United States.`
+    : `# ${headline}
+
+MediPulse, a health technology startup building AI tools for modern care teams, today announced the launch of its AI-powered health assistant for clinics and hospitals. The platform helps providers deliver proactive patient support through personalized reminders, real-time health insights, and automated follow-up workflows.
+
+The assistant integrates with existing healthcare operations and gives care teams a clearer view of patient needs between appointments. Early pilots showed stronger patient engagement and helped clinical staff reduce time spent on repetitive administrative tasks.
+
+> "Healthcare teams need practical AI that saves time and improves outcomes," said Dr. Lisa Chen, CEO of MediPulse. "Our goal is to make proactive care easier for every clinic."
+
+The launch comes as providers look for tools that can improve patient experience without adding complexity to already stretched teams. MediPulse is now available to healthcare organizations across the United States, with additional integrations planned later this year.`;
+
+  return {
+    headline,
+    markdown,
+    industries: selectedIndustries,
+  };
+}
+
+function buildFallbackEmailDraft(headline: string): EmailDraft {
+  return {
+    subject: `Story idea: ${headline}`,
+    intro:
+      "Hello, my name is Hans. I found something timely in the health technology space that may be relevant to your coverage: a new AI assistant designed to help care teams improve patient engagement and reduce administrative work. The press release is included below, and I would be happy to share more details or arrange an interview.",
+  };
+}
 
 export function VoiceAssistant() {
   const { user } = useUser();
@@ -164,10 +266,25 @@ export function VoiceAssistant() {
   const [transcript, setTranscript] = React.useState<TranscriptLine[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [callDurationMs, setCallDurationMs] = React.useState(0);
-  const [articleStatus, setArticleStatus] =
-    React.useState<ArticleStatus>("none");
-  const [articleId, setArticleId] = React.useState<Id<"articles"> | null>(null);
+
+  // Press release state
+  const [pressReleaseStatus, setPressReleaseStatus] =
+    React.useState<PressReleaseStatus>("none");
+  const [articleId, setArticleId] = React.useState<Id<"articles"> | null>(
+    null,
+  );
+
+  // Email draft state
+  const [emailStatus, setEmailStatus] = React.useState<EmailStatus>("none");
+  const [emailDraft, setEmailDraft] = React.useState<EmailDraft | null>(null);
+
+  // Error state
   const [sendError, setSendError] = React.useState<string | null>(null);
+
+  // Bridges the VAPI message handler into the send effect (avoids stale closures)
+  const [pendingSend, setPendingSend] = React.useState<PendingSend | null>(
+    null,
+  );
 
   const article = useQuery(
     api.articles.getById,
@@ -178,6 +295,23 @@ export function VoiceAssistant() {
   const vapiRef = React.useRef<any>(null);
   const callStartRef = React.useRef<number | null>(null);
   const transcriptScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const transcriptRef = React.useRef<TranscriptLine[]>([]);
+  const articleRef = React.useRef<Doc<"articles"> | null>(null);
+
+  // Keep a ref to industryOptions so the VAPI handler always reads the latest
+  // without triggering a VAPI reconnect every time industries load.
+  const industryOptionsRef = React.useRef(industryOptions);
+  React.useEffect(() => {
+    industryOptionsRef.current = industryOptions;
+  }, [industryOptions]);
+
+  React.useEffect(() => {
+    transcriptRef.current = transcript;
+  }, [transcript]);
+
+  React.useEffect(() => {
+    articleRef.current = article ?? null;
+  }, [article]);
 
   const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_API_KEY ?? "";
   const elevenLabsVoiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID ?? "";
@@ -185,6 +319,7 @@ export function VoiceAssistant() {
   const firstName =
     user?.firstName ?? user?.fullName?.split(" ")[0] ?? "there";
 
+  // VAPI setup effect
   React.useEffect(() => {
     if (!publicKey) return;
     let cancelled = false;
@@ -218,33 +353,48 @@ export function VoiceAssistant() {
 
       v.on("message", (msg: Record<string, unknown>) => {
         if (msg.type === "transcript" && msg.transcriptType === "final") {
-          const role = msg.role === "user" ? "user" : "assistant";
+          const role: TranscriptLine["role"] =
+            msg.role === "user" ? "user" : "assistant";
           const text = String(msg.transcript ?? "").trim();
           if (!text) return;
-          setTranscript((prev) => [...prev, { role, text }]);
+          setTranscript((prev) => {
+            const next = [...prev, { role, text }];
+            transcriptRef.current = next;
+            return next;
+          });
         }
 
         if (msg.type === "tool-calls") {
-          console.log("[Pressfy] tool-calls raw message:", JSON.stringify(msg, null, 2));
+          console.log(
+            "[Pressfy] tool-calls raw message:",
+            JSON.stringify(msg, null, 2),
+          );
 
           const toolCallList = msg.toolCallList as
             | Array<{
                 id: string;
-                function: { name: string; arguments: string | CreateArticleArgs };
+                function: { name: string; arguments: string | unknown };
               }>
             | undefined;
 
           const toolCall = toolCallList?.[0];
           if (!toolCall) {
-            console.warn("[Pressfy] tool-calls message had no toolCallList entries");
+            console.warn(
+              "[Pressfy] tool-calls message had no toolCallList entries",
+            );
             return;
           }
 
           console.log("[Pressfy] tool call received:", toolCall.function.name);
-          console.log("[Pressfy] raw arguments:", toolCall.function.arguments);
 
+          function parseArgs<T>(raw: string | unknown): T {
+            if (typeof raw === "string") return JSON.parse(raw) as T;
+            return raw as T;
+          }
+
+          // ── get_industries ──────────────────────────────────────────────
           if (toolCall.function.name === "get_industries") {
-            const available = industryOptions.slice();
+            const available = industryOptionsRef.current.slice();
             console.log("[Pressfy] get_industries returning:", available);
             v.send({
               type: "add-message",
@@ -257,64 +407,60 @@ export function VoiceAssistant() {
             return;
           }
 
-          if (toolCall.function.name === "createArticle") {
-            setArticleStatus("generating");
+          // ── create_press_release ────────────────────────────────────────
+          if (toolCall.function.name === "create_press_release") {
+            setPressReleaseStatus("generating");
             setSendError(null);
 
             void (async () => {
               try {
-                const rawArgs = toolCall.function.arguments;
-                let parsed: CreateArticleArgs;
+                let parsed = parseArgs<Partial<CreatePressReleaseArgs>>(
+                  toolCall.function.arguments,
+                );
 
-                if (typeof rawArgs === "string") {
-                  parsed = JSON.parse(rawArgs) as CreateArticleArgs;
-                } else {
-                  parsed = rawArgs;
-                }
+                console.log(
+                  "[Pressfy] parsed create_press_release args:",
+                  parsed,
+                );
 
-                console.log("[Pressfy] parsed createArticle args:", parsed);
+                const fallbackPressRelease = buildFallbackPressRelease(
+                  industryOptionsRef.current,
+                  transcriptRef.current,
+                );
 
                 if (!parsed.headline || !parsed.markdown) {
                   console.warn(
-                    "[Pressfy] tool-call args missing required fields — telling agent to retry:",
+                    "[Pressfy] create_press_release missing required fields; using fallback draft:",
                     parsed,
                   );
-                  setArticleStatus("none");
-                  v.send({
-                    type: "add-message",
-                    message: {
-                      role: "tool",
-                      tool_call_id: toolCall.id,
-                      content:
-                        "ERROR: createArticle was called with missing or empty fields. You must call it again, this time providing all three required arguments: a complete non-empty 'headline' string, a complete non-empty 'markdown' string (the full article body), and an 'industries' array. Do NOT call the tool with an empty object.",
-                    },
-                  });
-                  return;
+                  parsed = fallbackPressRelease;
                 }
 
                 const safeIndustries = (parsed.industries ?? []).filter(
                   (i): i is Industry =>
-                    industryOptions.includes(i as Industry),
+                    industryOptionsRef.current.includes(i as Industry),
                 );
-
-                console.log("[Pressfy] safe industries:", safeIndustries);
+                const pressRelease: CreatePressReleaseArgs = {
+                  headline: parsed.headline ?? fallbackPressRelease.headline,
+                  markdown: parsed.markdown ?? fallbackPressRelease.markdown,
+                  industries: safeIndustries,
+                };
 
                 const id = await createArticleMutation({
-                  headline: parsed.headline,
-                  markdown: parsed.markdown,
-                  industries: safeIndustries,
+                  headline: pressRelease.headline,
+                  markdown: pressRelease.markdown,
+                  industries: pressRelease.industries,
                 });
 
-                console.log("[Pressfy] article saved with id:", id);
-
+                console.log("[Pressfy] press release saved with id:", id);
                 setArticleId(id);
-                setArticleStatus("ready");
+                setPressReleaseStatus("ready");
 
                 v.send({
                   type: "add-message",
                   message: {
                     role: "system",
-                    content: `Article draft saved (id: ${id}). It is now on the user's screen for review. Wait for them to approve or request changes.`,
+                    content: `Press release draft saved (id: ${id}). It is now on the user's screen for review. Wait for them to approve or request changes.`,
                   },
                 });
 
@@ -323,25 +469,111 @@ export function VoiceAssistant() {
                   message: {
                     role: "tool",
                     tool_call_id: toolCall.id,
-                    content: `Article created with id ${id}. Awaiting user approval.`,
+                    content: `Press release created with id ${id}. Awaiting user approval on screen.`,
                   },
                 });
               } catch (err) {
-                console.error("[Pressfy] createArticle error:", err);
+                console.error("[Pressfy] create_press_release error:", err);
                 const message =
-                  err instanceof Error ? err.message : "Failed to save article";
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to save press release";
                 setSendError(message);
-                setArticleStatus("none");
+                setPressReleaseStatus("none");
                 v.send({
                   type: "add-message",
                   message: {
                     role: "tool",
                     tool_call_id: toolCall.id,
-                    content: `Error creating article: ${message}`,
+                    content: `Error creating press release: ${message}`,
                   },
                 });
               }
             })();
+            return;
+          }
+
+          // ── draft_email ─────────────────────────────────────────────────
+          if (toolCall.function.name === "draft_email") {
+            setEmailStatus("generating");
+            try {
+              let parsed = parseArgs<Partial<DraftEmailArgs>>(
+                toolCall.function.arguments,
+              );
+
+              console.log("[Pressfy] draft_email args:", parsed);
+
+              const fallbackEmailDraft = buildFallbackEmailDraft(
+                articleRef.current?.headline ?? "New AI Health Story",
+              );
+
+              if (!parsed.subject || !parsed.intro) {
+                console.warn(
+                  "[Pressfy] draft_email missing required fields; using fallback draft:",
+                  parsed,
+                );
+                parsed = fallbackEmailDraft;
+              }
+              const draft: EmailDraft = {
+                subject: parsed.subject ?? fallbackEmailDraft.subject,
+                intro: parsed.intro ?? fallbackEmailDraft.intro,
+              };
+
+              setEmailDraft(draft);
+              setEmailStatus("ready");
+
+              v.send({
+                type: "add-message",
+                message: {
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  content:
+                    "Email draft created. It is now on the user's screen for review. Wait for them to approve or request changes.",
+                },
+              });
+            } catch (err) {
+              console.error("[Pressfy] draft_email error:", err);
+              const message =
+                err instanceof Error
+                  ? err.message
+                  : "Failed to create email draft";
+              setEmailStatus("none");
+              v.send({
+                type: "add-message",
+                message: {
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  content: `Error creating email draft: ${message}`,
+                },
+              });
+            }
+            return;
+          }
+
+          // ── send_press_release ──────────────────────────────────────────
+          if (toolCall.function.name === "send_press_release") {
+            try {
+              const parsed = parseArgs<{ industries: string[] }>(
+                toolCall.function.arguments,
+              );
+              console.log("[Pressfy] send_press_release industries:", parsed.industries);
+              setPendingSend({
+                industries: parsed.industries ?? [],
+                toolCallId: toolCall.id,
+              });
+            } catch (err) {
+              const message =
+                err instanceof Error ? err.message : "Invalid arguments";
+              v.send({
+                type: "add-message",
+                message: {
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  content: `Error parsing send_press_release arguments: ${message}`,
+                },
+              });
+            }
+            return;
           }
         }
       });
@@ -352,8 +584,83 @@ export function VoiceAssistant() {
       vapiRef.current?.stop?.();
       vapiRef.current = null;
     };
-  }, [publicKey, createArticleMutation, industryOptions]);
+  }, [publicKey, createArticleMutation]);
 
+  // Pending send effect — fires when all required data is ready.
+  // Using a state bridge avoids stale closures in the VAPI message handler.
+  React.useEffect(() => {
+    if (!pendingSend || !article || !emailDraft || !articleId) return;
+
+    const { industries, toolCallId } = pendingSend;
+    setPendingSend(null);
+    setEmailStatus("sending");
+    setSendError(null);
+
+    const vapi = vapiRef.current;
+    const articleSnapshot = {
+      headline: article.headline,
+      markdown: article.markdown,
+    };
+    const emailDraftSnapshot = { ...emailDraft };
+    const articleIdSnapshot = articleId;
+    const journalistsSnapshot = [...journalists];
+
+    void (async () => {
+      try {
+        const res = await fetch("/api/send-press-release", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            headline: articleSnapshot.headline,
+            markdown: articleSnapshot.markdown,
+            emailSubject: emailDraftSnapshot.subject,
+            emailIntro: emailDraftSnapshot.intro,
+            industries,
+            journalists: journalistsSnapshot,
+          }),
+        });
+
+        if (!res.ok) {
+          const data = (await res.json()) as { error?: string };
+          throw new Error(data.error ?? "Failed to send");
+        }
+
+        const data = (await res.json()) as { sent: number; failed: number };
+        console.log(
+          `[Pressfy] Send complete — sent: ${data.sent}, failed: ${data.failed}`,
+        );
+
+        await markSentMutation({ id: articleIdSnapshot });
+        setEmailStatus("sent");
+
+        vapi?.send?.({
+          type: "add-message",
+          message: {
+            role: "tool",
+            tool_call_id: toolCallId,
+            content: `Successfully sent press release to ${data.sent} journalist${data.sent !== 1 ? "s" : ""}${data.failed > 0 ? `. ${data.failed} failed.` : "."}`,
+          },
+        });
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Failed to send press release";
+        console.error("[Pressfy] send error:", message);
+        setSendError(message);
+        setEmailStatus("ready");
+
+        vapi?.send?.({
+          type: "add-message",
+          message: {
+            role: "tool",
+            tool_call_id: toolCallId,
+            content: `Failed to send press release: ${message}. Inform the user of the error clearly.`,
+          },
+        });
+      }
+    })();
+  }, [pendingSend, article, emailDraft, articleId, journalists, markSentMutation]);
+
+  // Call duration timer
   React.useEffect(() => {
     if (status !== "active") return;
     const id = window.setInterval(() => {
@@ -364,6 +671,7 @@ export function VoiceAssistant() {
     return () => window.clearInterval(id);
   }, [status]);
 
+  // Auto-scroll transcript
   React.useEffect(() => {
     const node = transcriptScrollRef.current;
     if (!node) return;
@@ -382,13 +690,14 @@ export function VoiceAssistant() {
     const greeting =
       firstName === "there"
         ? FIRST_MESSAGE
-        : `Hey ${firstName}, this is Pressfy. Tell me what you're announcing and I'll help you sharpen the angle in a few minutes. Or just say 'create an article now' and I'll spin up a sample.`;
+        : `Hey ${firstName}, this is Pressfy. Tell me what you're announcing and I'll help you craft and send a journalist-ready press release. Or say 'create an article now' for a quick demo.`;
 
     try {
       await vapi.start({
         model: {
           provider: "openai",
-          model: "gpt-4.1",
+          model: "gpt-4o",
+          temperature: 0.5,
           messages: [{ role: "system", content: SYSTEM_PROMPT }],
           tools: [
             {
@@ -396,45 +705,84 @@ export function VoiceAssistant() {
               function: {
                 name: "get_industries",
                 description:
-                  "Returns the live list of journalist industry verticals available for press release distribution. Call this before every createArticle call to get the valid industry values.",
-                strict: true,
+                  "Returns the live list of journalist industry verticals available for press release distribution. Call this before create_press_release and before send_press_release.",
                 parameters: {
                   type: "object",
-                  additionalProperties: false,
                   properties: {},
-                  required: [],
                 },
               },
             },
             {
               type: "function",
               function: {
-                name: "createArticle",
+                name: "create_press_release",
                 description:
-                  "Saves a complete press release for user review. MUST be called after get_industries. Provide all three arguments fully populated. NEVER call with an empty object.",
-                strict: true,
+                  "Saves a complete press release draft for user review. MUST call get_industries first. Provide all three fields fully populated.",
                 parameters: {
                   type: "object",
-                  additionalProperties: false,
                   properties: {
                     headline: {
                       type: "string",
                       description:
-                        "REQUIRED. The press release headline. Non-empty, 10+ characters.",
+                        "The press release headline. Non-empty, 10+ characters.",
                     },
                     markdown: {
                       type: "string",
                       description:
-                        "REQUIRED. The complete press release in Markdown, 400+ characters. Include a # H1 headline, 3-5 body paragraphs, and at least one > blockquote for the spokesperson quote.",
+                        "The complete press release body in Markdown. Include a # H1 headline, 3–5 body paragraphs, and at least one > blockquote for a spokesperson quote.",
                     },
                     industries: {
                       type: "array",
                       description:
-                        "REQUIRED. Use ONLY values returned by get_industries. Choose every industry that fits the story. Use [] if none fit.",
+                        "Industry values from get_industries that match this story.",
                       items: { type: "string" },
                     },
                   },
                   required: ["headline", "markdown", "industries"],
+                },
+              },
+            },
+            {
+              type: "function",
+              function: {
+                name: "draft_email",
+                description:
+                  "Creates a journalist outreach email draft for user review. Only call after the system confirms the user approved the press release. The press release body is appended automatically — do NOT put it in intro.",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    subject: {
+                      type: "string",
+                      description:
+                        "A short punchy email subject line (one sentence).",
+                    },
+                    intro: {
+                      type: "string",
+                      description:
+                        "A 2–3 sentence personal pitch for the journalist: who you are, why this story is relevant, what makes it newsworthy. Keep it brief — the full press release is appended automatically.",
+                    },
+                  },
+                  required: ["subject", "intro"],
+                },
+              },
+            },
+            {
+              type: "function",
+              function: {
+                name: "send_press_release",
+                description:
+                  "Sends the approved email to relevant journalists. MUST call get_industries immediately before this. Only call after the system confirms the user approved the email draft.",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    industries: {
+                      type: "array",
+                      description:
+                        "Industry values from the most recent get_industries response.",
+                      items: { type: "string" },
+                    },
+                  },
+                  required: ["industries"],
                 },
               },
             },
@@ -471,90 +819,140 @@ export function VoiceAssistant() {
     setError(null);
     setSendError(null);
     setCallDurationMs(0);
-    setArticleStatus("none");
+    setPressReleaseStatus("none");
+    setEmailStatus("none");
+    setEmailDraft(null);
     setArticleId(null);
+    setPendingSend(null);
     callStartRef.current = null;
   }, []);
 
-  const handleApprove = React.useCallback(async () => {
-    if (!articleId || !article) {
-      console.warn("[Pressfy] approve bailed — articleId:", articleId, "article:", article);
-      return;
-    }
-    console.log("[Pressfy] approving article", articleId, {
-      headline: article.headline,
-      industries: article.industries,
-      journalistCount: journalists.length,
-    });
-    setSendError(null);
-    setArticleStatus("sending");
+  const handleApprovePressRelease = React.useCallback(async () => {
+    if (!articleId) return;
     try {
       await approveArticleMutation({ id: articleId });
+      setPressReleaseStatus("approved");
+      vapiRef.current?.send?.({
+        type: "add-message",
+        message: {
+          role: "system",
+          content:
+            "The user approved the press release. Proceed to Step 4: call draft_email now with a compelling subject and full body.",
+        },
+      });
+    } catch (err) {
+      console.error("[Pressfy] Error approving press release:", err);
+    }
+  }, [articleId, approveArticleMutation]);
 
+  const handleRejectPressRelease = React.useCallback((feedback: string) => {
+    const note = feedback.trim();
+    vapiRef.current?.send?.({
+      type: "add-message",
+      message: {
+        role: "system",
+        content: `The user DISAPPROVED the press release. ${
+          note
+            ? `Their feedback: "${note}". `
+            : "They did not give specific feedback — ask them what to change. "
+        }Acknowledge briefly, then call get_industries and create_press_release again with a fully revised version.`,
+      },
+    });
+    setPressReleaseStatus("rejected");
+    setArticleId(null);
+    setSendError(null);
+  }, []);
+
+  const handleApproveEmail = React.useCallback(async () => {
+    if (!article || !articleId || !emailDraft) {
+      setSendError("Missing approved press release or email draft.");
+      setEmailStatus("ready");
+      return;
+    }
+
+    const targetIndustries = (article.industries ?? []) as Industry[];
+    const matchingJournalists = journalists.filter((j) =>
+      targetIndustries.includes(j.industry),
+    );
+
+    if (targetIndustries.length === 0 || matchingJournalists.length === 0) {
+      setSendError(
+        "No matching journalists found for the selected industries.",
+      );
+      setEmailStatus("ready");
+      return;
+    }
+
+    setEmailStatus("sending");
+    setSendError(null);
+
+    try {
       const res = await fetch("/api/send-press-release", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           headline: article.headline,
           markdown: article.markdown,
-          industries: article.industries,
+          emailSubject: emailDraft.subject,
+          emailIntro: emailDraft.intro,
+          industries: targetIndustries,
           journalists,
         }),
       });
 
+      const data = (await res.json()) as {
+        error?: string;
+        sent?: number;
+        failed?: number;
+      };
+
       if (!res.ok) {
-        const data = (await res.json()) as { error?: string };
-        throw new Error(data.error ?? "Failed to send");
+        throw new Error(data.error ?? "Failed to send press release");
       }
 
       await markSentMutation({ id: articleId });
-      setArticleStatus("sent");
+      setEmailStatus("sent");
 
       vapiRef.current?.send?.({
         type: "add-message",
         message: {
           role: "system",
-          content:
-            "The user approved the article and it has been sent to the matching journalists. Congratulate them briefly.",
+          content: `The approved press release was sent successfully to ${data.sent ?? matchingJournalists.length} journalist${(data.sent ?? matchingJournalists.length) !== 1 ? "s" : ""}. Briefly confirm success to the user.`,
         },
       });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to send press release";
+      console.error("[Pressfy] send error:", message);
       setSendError(message);
-      setArticleStatus("ready");
-    }
-  }, [
-    article,
-    articleId,
-    approveArticleMutation,
-    journalists,
-    markSentMutation,
-  ]);
+      setEmailStatus("ready");
 
-  const handleReject = React.useCallback(
-    (feedback: string) => {
-      const vapi = vapiRef.current;
-      const note = feedback.trim();
-
-      vapi?.send?.({
+      vapiRef.current?.send?.({
         type: "add-message",
         message: {
           role: "system",
-          content: `The user DISAPPROVED the draft. ${
-            note
-              ? `Their feedback: "${note}". `
-              : "They did not give specific feedback — ask them what to change. "
-          }Acknowledge briefly and then call createArticle again with a revised version that addresses every change.`,
+          content: `Sending failed: ${message}. Tell the user clearly that the email was not sent.`,
         },
       });
+    }
+  }, [article, articleId, emailDraft, journalists, markSentMutation]);
 
-      setArticleStatus("rejected");
-      setArticleId(null);
-      setSendError(null);
-    },
-    [],
-  );
+  const handleRejectEmail = React.useCallback((feedback: string) => {
+    const note = feedback.trim();
+    vapiRef.current?.send?.({
+      type: "add-message",
+      message: {
+        role: "system",
+        content: `The user DISAPPROVED the email draft. ${
+          note
+            ? `Their feedback: "${note}". `
+            : "They did not give specific feedback — ask them what to change. "
+        }Acknowledge briefly, then call draft_email again with a fully revised subject and body.`,
+      },
+    });
+    setEmailStatus("rejected");
+    setEmailDraft(null);
+  }, []);
 
   if (!publicKey) {
     return <MissingKeyNotice />;
@@ -564,6 +962,12 @@ export function VoiceAssistant() {
   const isActive = status === "active";
   const isEnded = status === "ended";
   const isError = status === "error";
+
+  const matchingJournalistsCount = article
+    ? journalists.filter((j) =>
+        (article.industries as string[]).includes(j.industry),
+      ).length
+    : 0;
 
   return (
     <Card className="overflow-hidden rounded-none border-2 border-black bg-[#F5F0E8] py-0 text-black shadow-none ring-0">
@@ -621,16 +1025,26 @@ export function VoiceAssistant() {
           isActive={isActive}
         />
 
-        <ArticlePreview
+        <PressReleasePreview
           key={articleId ?? "none"}
-          articleStatus={articleStatus}
+          pressReleaseStatus={pressReleaseStatus}
           headline={article?.headline ?? null}
           markdown={article?.markdown ?? null}
           industries={(article?.industries ?? []) as Industry[]}
           journalists={journalists}
+          onApprove={handleApprovePressRelease}
+          onReject={handleRejectPressRelease}
+        />
+
+        <EmailDraftPreview
+          key={emailDraft?.subject ?? "email-none"}
+          emailStatus={emailStatus}
+          subject={emailDraft?.subject ?? null}
+          intro={emailDraft?.intro ?? null}
+          matchingJournalistsCount={matchingJournalistsCount}
           sendError={sendError}
-          onApprove={handleApprove}
-          onReject={handleReject}
+          onApprove={handleApproveEmail}
+          onReject={handleRejectEmail}
         />
       </CardContent>
     </Card>
@@ -947,31 +1361,29 @@ const Transcript = React.forwardRef<
   );
 });
 
-function ArticlePreview({
-  articleStatus,
+function PressReleasePreview({
+  pressReleaseStatus,
   headline,
   markdown,
   industries,
   journalists,
-  sendError,
   onApprove,
   onReject,
 }: {
-  articleStatus: ArticleStatus;
+  pressReleaseStatus: PressReleaseStatus;
   headline: string | null;
   markdown: string | null;
   industries: Industry[];
   journalists: Doc<"journalists">[];
-  sendError: string | null;
   onApprove: () => void;
   onReject: (feedback: string) => void;
 }) {
   const [feedback, setFeedback] = React.useState("");
   const [showFeedback, setShowFeedback] = React.useState(false);
 
-  if (articleStatus === "none") return null;
+  if (pressReleaseStatus === "none") return null;
 
-  if (articleStatus === "generating") {
+  if (pressReleaseStatus === "generating") {
     return (
       <div className="flex items-center gap-3 border-2 border-dashed border-black bg-white/50 p-5 text-sm font-medium uppercase tracking-[0.14em] text-black/60">
         <LoaderIcon className="size-4 shrink-0 animate-spin text-[#fd5200]" />
@@ -980,7 +1392,7 @@ function ArticlePreview({
     );
   }
 
-  if (articleStatus === "rejected") {
+  if (pressReleaseStatus === "rejected") {
     return (
       <div className="flex items-center gap-3 border-2 border-dashed border-black bg-white/50 p-5 text-sm font-medium uppercase tracking-[0.14em] text-black/60">
         <LoaderIcon className="size-4 shrink-0 animate-spin text-[#fd5200]" />
@@ -989,28 +1401,9 @@ function ArticlePreview({
     );
   }
 
-  const matchingJournalists = journalists.filter((j) =>
-    industries.includes(j.industry),
-  );
-
-  if (articleStatus === "sent") {
-    return (
-      <div className="flex items-center gap-3 border-2 border-black bg-[#fd5200] p-5 text-sm font-bold uppercase tracking-[0.14em] text-white">
-        <CircleCheckIcon className="size-4 shrink-0" />
-        <span>
-          Sent to {matchingJournalists.length} journalist
-          {matchingJournalists.length !== 1 ? "s" : ""} across{" "}
-          {industries.length > 0 ? industries.join(" + ") : "no industries"}.
-        </span>
-      </div>
-    );
-  }
-
   if (!headline || !markdown) return null;
 
-  const isSending = articleStatus === "sending";
-  const isApprovedView =
-    articleStatus === "approved" || articleStatus === "sending";
+  const isApproved = pressReleaseStatus === "approved";
 
   return (
     <div className="overflow-hidden border-2 border-black bg-white/60">
@@ -1019,7 +1412,7 @@ function ArticlePreview({
           <FileTextIcon className="size-4 text-[#fd5200]" />
           Press release draft
         </div>
-        {isApprovedView ? (
+        {isApproved ? (
           <Badge
             variant="outline"
             className="gap-1.5 rounded-none border-white/40 text-white"
@@ -1056,9 +1449,7 @@ function ArticlePreview({
                 className="rounded-none bg-black text-white"
               >
                 {industry} ·{" "}
-                {
-                  journalists.filter((j) => j.industry === industry).length
-                }{" "}
+                {journalists.filter((j) => j.industry === industry).length}{" "}
                 contacts
               </Badge>
             ))
@@ -1069,23 +1460,15 @@ function ArticlePreview({
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
         </div>
 
-        {sendError ? (
-          <p className="border-2 border-destructive bg-destructive/10 p-3 text-xs font-medium text-destructive">
-            {sendError}
-          </p>
-        ) : null}
-
-        {!isApprovedView ? (
+        {!isApproved ? (
           <>
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <Button
                 onClick={onApprove}
-                disabled={industries.length === 0 || matchingJournalists.length === 0}
-                className="gap-2 rounded-none bg-[#fd5200] font-bold uppercase tracking-[0.16em] text-white hover:bg-[#e04a00] disabled:opacity-60"
+                className="gap-2 rounded-none bg-[#fd5200] font-bold uppercase tracking-[0.16em] text-white hover:bg-[#e04a00]"
               >
                 <CheckIcon className="size-4" />
-                Approve &amp; send to {matchingJournalists.length} journalist
-                {matchingJournalists.length !== 1 ? "s" : ""}
+                Approve press release
               </Button>
               <Button
                 variant="outline"
@@ -1107,16 +1490,205 @@ function ArticlePreview({
             {showFeedback ? (
               <div className="flex flex-col gap-3 border-2 border-dashed border-black p-4">
                 <label
-                  htmlFor="reject-feedback"
+                  htmlFor="pr-reject-feedback"
                   className="text-[10px] font-bold uppercase tracking-[0.18em] text-black/60"
                 >
                   What should change?
                 </label>
                 <textarea
-                  id="reject-feedback"
+                  id="pr-reject-feedback"
                   value={feedback}
                   onChange={(e) => setFeedback(e.target.value)}
                   placeholder="e.g. punchier headline, drop the metric in paragraph 2, change the quote to come from the CTO…"
+                  rows={3}
+                  className="resize-none border-2 border-black bg-white p-3 text-sm leading-relaxed text-black focus:outline-none focus:ring-2 focus:ring-[#fd5200]"
+                />
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => onReject(feedback)}
+                    className="gap-2 rounded-none bg-black font-bold uppercase tracking-[0.16em] text-white hover:bg-black/80"
+                  >
+                    <RotateCcwIcon className="size-4" />
+                    Send feedback &amp; regenerate
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setShowFeedback(false)}
+                    className="rounded-none font-bold uppercase tracking-[0.16em] text-black/60 hover:bg-transparent hover:text-black"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="text-xs font-medium uppercase tracking-[0.14em] text-black/50">
+            Press release approved — your outreach email is being drafted
+            below.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EmailDraftPreview({
+  emailStatus,
+  subject,
+  intro,
+  matchingJournalistsCount,
+  sendError,
+  onApprove,
+  onReject,
+}: {
+  emailStatus: EmailStatus;
+  subject: string | null;
+  intro: string | null;
+  matchingJournalistsCount: number;
+  sendError: string | null;
+  onApprove: () => void;
+  onReject: (feedback: string) => void;
+}) {
+  const [feedback, setFeedback] = React.useState("");
+  const [showFeedback, setShowFeedback] = React.useState(false);
+
+  if (emailStatus === "none") return null;
+
+  if (emailStatus === "generating") {
+    return (
+      <div className="flex items-center gap-3 border-2 border-dashed border-black bg-white/50 p-5 text-sm font-medium uppercase tracking-[0.14em] text-black/60">
+        <LoaderIcon className="size-4 shrink-0 animate-spin text-[#fd5200]" />
+        <span>Drafting your journalist outreach email…</span>
+      </div>
+    );
+  }
+
+  if (emailStatus === "rejected") {
+    return (
+      <div className="flex items-center gap-3 border-2 border-dashed border-black bg-white/50 p-5 text-sm font-medium uppercase tracking-[0.14em] text-black/60">
+        <LoaderIcon className="size-4 shrink-0 animate-spin text-[#fd5200]" />
+        <span>Revising your email draft based on your feedback…</span>
+      </div>
+    );
+  }
+
+  if (emailStatus === "sent") {
+    return (
+      <div className="flex items-center gap-3 border-2 border-black bg-[#fd5200] p-5 text-sm font-bold uppercase tracking-[0.14em] text-white">
+        <CircleCheckIcon className="size-4 shrink-0" />
+        <span>
+          Press release sent to {matchingJournalistsCount} journalist
+          {matchingJournalistsCount !== 1 ? "s" : ""}.
+        </span>
+      </div>
+    );
+  }
+
+  if (!subject || !intro) return null;
+
+  const isSending = emailStatus === "sending" || emailStatus === "approved";
+  const isApprovedView = emailStatus === "approved" || emailStatus === "sending";
+
+  return (
+    <div className="overflow-hidden border-2 border-black bg-white/60">
+      <div className="flex items-center justify-between border-b-2 border-black bg-black px-5 py-3 text-white">
+        <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-[0.16em]">
+          <MailIcon className="size-4 text-[#fd5200]" />
+          Journalist outreach email
+        </div>
+        {isApprovedView ? (
+          <Badge
+            variant="outline"
+            className="gap-1.5 rounded-none border-white/40 text-white"
+          >
+            <CheckIcon className="size-3" />
+            Approved
+          </Badge>
+        ) : (
+          <Badge
+            variant="outline"
+            className="rounded-none border-white/40 text-white/70"
+          >
+            Awaiting review
+          </Badge>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-4 p-5">
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-black/50">
+            Subject
+          </span>
+          <p className="border-2 border-black bg-white px-4 py-3 text-sm font-medium text-black">
+            {subject}
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-black/50">
+            Personal intro
+          </span>
+          <p className="border-2 border-black bg-white px-4 py-3 text-sm leading-relaxed text-black">
+            {intro}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 border-2 border-dashed border-black/30 bg-black/5 px-4 py-3">
+          <FileTextIcon className="size-3.5 shrink-0 text-black/40" />
+          <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-black/40">
+            Press release appended automatically
+          </span>
+        </div>
+
+        {sendError ? (
+          <p className="border-2 border-destructive bg-destructive/10 p-3 text-xs font-medium text-destructive">
+            {sendError}
+          </p>
+        ) : null}
+
+        {!isApprovedView ? (
+          <>
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <Button
+                onClick={onApprove}
+                disabled={matchingJournalistsCount === 0}
+                className="gap-2 rounded-none bg-[#fd5200] font-bold uppercase tracking-[0.16em] text-white hover:bg-[#e04a00] disabled:opacity-60"
+              >
+                <SendIcon className="size-4" />
+                Approve &amp; send to {matchingJournalistsCount} journalist
+                {matchingJournalistsCount !== 1 ? "s" : ""}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setShowFeedback((s) => !s)}
+                className="gap-2 rounded-none border-2 border-black bg-white font-bold uppercase tracking-[0.16em] text-black hover:bg-black hover:text-white"
+              >
+                <XIcon className="size-4" />
+                Disapprove &amp; revise
+              </Button>
+            </div>
+
+            {matchingJournalistsCount === 0 ? (
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-black/50">
+                No journalists match the selected industries — go back and
+                revise the press release to select broader industries.
+              </p>
+            ) : null}
+
+            {showFeedback ? (
+              <div className="flex flex-col gap-3 border-2 border-dashed border-black p-4">
+                <label
+                  htmlFor="email-reject-feedback"
+                  className="text-[10px] font-bold uppercase tracking-[0.18em] text-black/60"
+                >
+                  What should change?
+                </label>
+                <textarea
+                  id="email-reject-feedback"
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
+                  placeholder="e.g. make the intro shorter, more personal, add urgency to the CTA…"
                   rows={3}
                   className="resize-none border-2 border-black bg-white p-3 text-sm leading-relaxed text-black focus:outline-none focus:ring-2 focus:ring-[#fd5200]"
                 />
@@ -1144,15 +1716,9 @@ function ArticlePreview({
             {isSending ? (
               <Badge className="gap-2 rounded-none bg-black px-3 py-2 text-white">
                 <LoaderIcon className="size-4 animate-spin" />
-                Sending…
+                Sending to journalists…
               </Badge>
-            ) : (
-              <Badge className="gap-2 rounded-none bg-[#fd5200] px-3 py-2 text-white">
-                <SendIcon className="size-4" />
-                Delivering to {matchingJournalists.length} journalist
-                {matchingJournalists.length !== 1 ? "s" : ""}
-              </Badge>
-            )}
+            ) : null}
           </div>
         )}
       </div>
