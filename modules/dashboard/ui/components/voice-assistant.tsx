@@ -2,8 +2,11 @@
 
 import * as React from "react";
 import { useUser } from "@clerk/nextjs";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import {
   AudioLinesIcon,
   CheckIcon,
@@ -14,8 +17,10 @@ import {
   MicOffIcon,
   PhoneIcon,
   PhoneOffIcon,
+  RotateCcwIcon,
   SendIcon,
   SparklesIcon,
+  XIcon,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -24,64 +29,125 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 type VoiceStatus = "idle" | "connecting" | "active" | "ended" | "error";
-type ArticleStatus = "none" | "generating" | "ready" | "approved" | "sending" | "sent";
+type ArticleStatus =
+  | "none"
+  | "generating"
+  | "ready"
+  | "approved"
+  | "sending"
+  | "sent"
+  | "rejected";
+
+type Industry = "Health" | "Consumer Product";
 
 type TranscriptLine = {
   role: "user" | "assistant";
   text: string;
 };
 
-type ArticleDraft = {
-  headline: string;
-  subheadline?: string;
-  body: string;
-  quote?: string;
-  quotePerson?: string;
-};
-
 const SYSTEM_PROMPT = `You are Pressfy's voice press strategist — a fast, articulate
 collaborator for founders, comms leads, and agency teams.
 
-Your job in this short conversation is to help the user shape a publication-ready
-press story. Keep responses concise (2-3 sentences) and conversational.
+Your job is to help the user shape a publication-ready press story. Keep spoken
+responses concise (2-3 sentences) and conversational.
 
-In the first turn, ask which announcement they want to work on (launch, raise,
-hire, partnership, milestone, or something else).
+==========================
+THE createArticle TOOL
+==========================
+You have one tool: createArticle. It takes exactly three required arguments:
+
+1. headline (string, non-empty, 10+ characters)
+   The press release headline.
+
+2. markdown (string, non-empty, 400+ characters)
+   The COMPLETE press release body written in Markdown. Must contain:
+   - a "# " H1 line that matches the headline
+   - 3-5 body paragraphs separated by blank lines
+   - at least one "> " blockquote line containing the spokesperson quote
+
+3. industries (array of strings)
+   Choose any subset of ["Health", "Consumer Product"] — every industry
+   that genuinely fits the story. Use [] only if neither fits.
+   - "Health" = healthcare, wellness, biotech, medical innovation
+   - "Consumer Product" = consumer goods, retail, DTC brands, product launches
+
+ABSOLUTE RULES for calling createArticle:
+- Before invoking the tool, you MUST have fully written headline, markdown,
+  and industries in your head. Write the entire markdown article BEFORE
+  emitting the tool call. Never call the tool with an empty object {} or
+  any missing field. Calls with empty arguments are silently rejected.
+- Make exactly ONE complete call with all three fields populated.
+- Right BEFORE calling the tool, say one short transitional sentence like
+  "Okay, drafting that now." (so the user isn't left in dead silence).
+  Then emit the tool call.
+
+==========================
+QUICK-START SHORTCUT
+==========================
+If the user says any variant of "create an article now", "just make one",
+"use sample data", "demo it", "show me an example", or similar:
+1. Say one short sentence: "Sure — drafting a sample release now."
+2. Compose a complete, believable MOCK press release in your head (invent
+   a company, product, numbers, spokesperson, and quote).
+3. Call createArticle ONCE with all three fields fully filled in.
+
+==========================
+NORMAL CONVERSATION FLOW
+==========================
+Otherwise, in the first turn, ask which announcement they want to work on
+(launch, raise, hire, partnership, milestone, or something else).
 
 Then walk them through, in order:
 - The headline angle a journalist would actually open
 - The 2-3 strongest proof points (numbers, customers, named partners)
-- Who the quoted spokesperson is and the one quote that lands
-- The audiences and beats they want this to reach
+- The quoted spokesperson and the one quote that lands
+- The target audience / beats
 
-Be opinionated. Push back gently when the angle is weak, recommend stronger
-hooks, and surface obvious follow-ups.
+Be opinionated. Push back gently when the angle is weak.
 
-JOURNALIST DISTRIBUTION DATABASE:
-You have access to a curated list of journalists across two industry verticals:
-- Health — journalists and editors covering healthcare, wellness, biotech, and medical innovation
-- Consumer Product — journalists covering consumer goods, retail, DTC brands, and product launches
+Once you have enough information, say "Okay, drafting that now." and then
+call createArticle with all three required fields fully populated.
 
-When discussing target audiences, reference these two groups by name and help the user
-decide which industries are the best fit for their announcement. Both groups can be targeted
-simultaneously if the story has cross-industry appeal.
+==========================
+AFTER THE TOOL RESPONDS
+==========================
+When you receive the tool response confirming the article was saved, say:
+"Your press release is ready — take a look at the draft on screen. Approve
+it when you're happy and I'll send it to the right journalists, or tell me
+what to change."
 
-Once you have gathered enough information (headline angle, proof points, quote,
-and target audience), tell the user: "Give me just a moment — I'm drafting your
-press release now." Then immediately call the createArticle function with a
-full, polished press release draft. After the tool call, say: "Your press release
-is ready! Take a look at the draft on screen. Once you're happy with it, go ahead
-and approve it — I'll take care of sending it out to the relevant journalists."
+==========================
+HANDLING DISAPPROVAL
+==========================
+If the system tells you the user disapproved with feedback:
+1. Say one short acknowledgment like "Got it — revising now."
+2. Rewrite the complete article in your head with the feedback applied.
+3. Call createArticle ONCE with all three fields fully repopulated.
 
-IMPORTANT: Always tell the user to wait briefly and then call createArticle.
-The user must approve the article before it is sent.`;
+IMPORTANT: Never send anything to journalists until the user approves on
+screen. The user does the approving via the UI — not by voice.`;
 
 const FIRST_MESSAGE =
-  "Hey, this is Pressfy. Tell me what you're announcing and I'll help you sharpen the angle in a few minutes.";
+  "Hey, this is Pressfy. Tell me what you're announcing and I'll help you sharpen the angle in a few minutes. Or just say 'create an article now' and I'll spin up a sample.";
+
+const INDUSTRY_OPTIONS: Industry[] = ["Health", "Consumer Product"];
+
+type CreateArticleArgs = {
+  headline: string;
+  markdown: string;
+  industries: Industry[];
+};
 
 export function VoiceAssistant() {
   const { user } = useUser();
-  const journalists = useQuery(api.journalists.list) ?? [];
+  const journalistsRaw = useQuery(api.journalists.list);
+  const journalists = React.useMemo(
+    () => journalistsRaw ?? [],
+    [journalistsRaw],
+  );
+  const createArticleMutation = useMutation(api.articles.create);
+  const approveArticleMutation = useMutation(api.articles.approve);
+  const markSentMutation = useMutation(api.articles.markSent);
 
   const [status, setStatus] = React.useState<VoiceStatus>("idle");
   const [isMuted, setIsMuted] = React.useState(false);
@@ -90,9 +156,15 @@ export function VoiceAssistant() {
   const [transcript, setTranscript] = React.useState<TranscriptLine[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [callDurationMs, setCallDurationMs] = React.useState(0);
-  const [articleStatus, setArticleStatus] = React.useState<ArticleStatus>("none");
-  const [articleDraft, setArticleDraft] = React.useState<ArticleDraft | null>(null);
+  const [articleStatus, setArticleStatus] =
+    React.useState<ArticleStatus>("none");
+  const [articleId, setArticleId] = React.useState<Id<"articles"> | null>(null);
   const [sendError, setSendError] = React.useState<string | null>(null);
+
+  const article = useQuery(
+    api.articles.getById,
+    articleId ? { id: articleId } : "skip",
+  );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const vapiRef = React.useRef<any>(null);
@@ -102,7 +174,8 @@ export function VoiceAssistant() {
   const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_API_KEY ?? "";
   const elevenLabsVoiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID ?? "";
 
-  const firstName = user?.firstName ?? user?.fullName?.split(" ")[0] ?? "there";
+  const firstName =
+    user?.firstName ?? user?.fullName?.split(" ")[0] ?? "there";
 
   React.useEffect(() => {
     if (!publicKey) return;
@@ -144,33 +217,109 @@ export function VoiceAssistant() {
         }
 
         if (msg.type === "tool-calls") {
-          const toolCallList = msg.toolCallList as Array<{
-            id: string;
-            function: { name: string; arguments: string };
-          }> | undefined;
+          console.log("[Pressfy] tool-calls raw message:", JSON.stringify(msg, null, 2));
+
+          const toolCallList = msg.toolCallList as
+            | Array<{
+                id: string;
+                function: { name: string; arguments: string | CreateArticleArgs };
+              }>
+            | undefined;
 
           const toolCall = toolCallList?.[0];
-          if (!toolCall) return;
+          if (!toolCall) {
+            console.warn("[Pressfy] tool-calls message had no toolCallList entries");
+            return;
+          }
+
+          console.log("[Pressfy] tool call received:", toolCall.function.name);
+          console.log("[Pressfy] raw arguments:", toolCall.function.arguments);
 
           if (toolCall.function.name === "createArticle") {
             setArticleStatus("generating");
-            try {
-              const args = JSON.parse(toolCall.function.arguments) as ArticleDraft;
-              setArticleDraft(args);
-              setArticleStatus("ready");
-            } catch {
-              setArticleStatus("none");
-            }
+            setSendError(null);
 
-            v.send({
-              type: "add-message",
-              message: {
-                role: "tool",
-                tool_call_id: toolCall.id,
-                content:
-                  "Article draft has been created and is now displayed to the user for review and approval.",
-              },
-            });
+            void (async () => {
+              try {
+                const rawArgs = toolCall.function.arguments;
+                let parsed: CreateArticleArgs;
+
+                if (typeof rawArgs === "string") {
+                  parsed = JSON.parse(rawArgs) as CreateArticleArgs;
+                } else {
+                  parsed = rawArgs;
+                }
+
+                console.log("[Pressfy] parsed createArticle args:", parsed);
+
+                if (!parsed.headline || !parsed.markdown) {
+                  console.warn(
+                    "[Pressfy] tool-call args missing required fields — telling agent to retry:",
+                    parsed,
+                  );
+                  setArticleStatus("none");
+                  v.send({
+                    type: "add-message",
+                    message: {
+                      role: "tool",
+                      tool_call_id: toolCall.id,
+                      content:
+                        "ERROR: createArticle was called with missing or empty fields. You must call it again, this time providing all three required arguments: a complete non-empty 'headline' string, a complete non-empty 'markdown' string (the full article body), and an 'industries' array. Do NOT call the tool with an empty object.",
+                    },
+                  });
+                  return;
+                }
+
+                const safeIndustries = (parsed.industries ?? []).filter(
+                  (i): i is Industry =>
+                    INDUSTRY_OPTIONS.includes(i as Industry),
+                );
+
+                console.log("[Pressfy] safe industries:", safeIndustries);
+
+                const id = await createArticleMutation({
+                  headline: parsed.headline,
+                  markdown: parsed.markdown,
+                  industries: safeIndustries,
+                });
+
+                console.log("[Pressfy] article saved with id:", id);
+
+                setArticleId(id);
+                setArticleStatus("ready");
+
+                v.send({
+                  type: "add-message",
+                  message: {
+                    role: "system",
+                    content: `Article draft saved (id: ${id}). It is now on the user's screen for review. Wait for them to approve or request changes.`,
+                  },
+                });
+
+                v.send({
+                  type: "add-message",
+                  message: {
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    content: `Article created with id ${id}. Awaiting user approval.`,
+                  },
+                });
+              } catch (err) {
+                console.error("[Pressfy] createArticle error:", err);
+                const message =
+                  err instanceof Error ? err.message : "Failed to save article";
+                setSendError(message);
+                setArticleStatus("none");
+                v.send({
+                  type: "add-message",
+                  message: {
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    content: `Error creating article: ${message}`,
+                  },
+                });
+              }
+            })();
           }
         }
       });
@@ -181,7 +330,7 @@ export function VoiceAssistant() {
       vapiRef.current?.stop?.();
       vapiRef.current = null;
     };
-  }, [publicKey]);
+  }, [publicKey, createArticleMutation]);
 
   React.useEffect(() => {
     if (status !== "active") return;
@@ -208,15 +357,16 @@ export function VoiceAssistant() {
     setIsMuted(false);
     setStatus("connecting");
 
-    const greeting = firstName === "there"
-      ? FIRST_MESSAGE
-      : `Hey ${firstName}, this is Pressfy. Tell me what you're announcing and I'll help you sharpen the angle in a few minutes.`;
+    const greeting =
+      firstName === "there"
+        ? FIRST_MESSAGE
+        : `Hey ${firstName}, this is Pressfy. Tell me what you're announcing and I'll help you sharpen the angle in a few minutes. Or just say 'create an article now' and I'll spin up a sample.`;
 
     try {
       await vapi.start({
         model: {
           provider: "openai",
-          model: "gpt-4o",
+          model: "gpt-4.1",
           messages: [{ role: "system", content: SYSTEM_PROMPT }],
           tools: [
             {
@@ -224,34 +374,33 @@ export function VoiceAssistant() {
               function: {
                 name: "createArticle",
                 description:
-                  "Generates a full press release draft based on the conversation and presents it to the user for approval. Call this once you have the headline angle, key proof points, spokesperson quote, and target audience.",
+                  "Saves a complete press release for user review. You MUST provide all three arguments fully populated: a non-empty headline string, a multi-paragraph markdown body string, and an industries array. NEVER call this with an empty object.",
+                strict: true,
                 parameters: {
                   type: "object",
+                  additionalProperties: false,
                   properties: {
                     headline: {
                       type: "string",
-                      description: "The press release headline",
+                      description:
+                        "REQUIRED. The press release headline. Must be a non-empty string of at least 10 characters. Example: 'Acme Health Raises $20M Series B to Expand Remote Patient Monitoring'.",
                     },
-                    subheadline: {
-                      type: "string",
-                      description: "An optional subheadline or deck",
-                    },
-                    body: {
+                    markdown: {
                       type: "string",
                       description:
-                        "The full press release body text (3-5 paragraphs, newline-separated)",
+                        "REQUIRED. The complete press release written as Markdown. Must be a non-empty string of at least 400 characters. Must include: a # H1 headline matching the headline field, 3-5 body paragraphs separated by blank lines, and at least one > blockquote for the spokesperson quote.",
                     },
-                    quote: {
-                      type: "string",
-                      description: "The spokesperson quote",
-                    },
-                    quotePerson: {
-                      type: "string",
+                    industries: {
+                      type: "array",
                       description:
-                        "The person being quoted — full name and title",
+                        "REQUIRED. Journalist verticals to distribute to. Include every industry that applies. Use [] only if the story genuinely fits neither beat.",
+                      items: {
+                        type: "string",
+                        enum: ["Health", "Consumer Product"],
+                      },
                     },
                   },
-                  required: ["headline", "body"],
+                  required: ["headline", "markdown", "industries"],
                 },
               },
             },
@@ -289,30 +438,81 @@ export function VoiceAssistant() {
     setSendError(null);
     setCallDurationMs(0);
     setArticleStatus("none");
-    setArticleDraft(null);
+    setArticleId(null);
     callStartRef.current = null;
   }, []);
 
-  const handleSend = React.useCallback(async () => {
-    if (!articleDraft || !journalists.length) return;
+  const handleApprove = React.useCallback(async () => {
+    if (!articleId || !article) return;
     setSendError(null);
     setArticleStatus("sending");
     try {
+      await approveArticleMutation({ id: articleId });
+
       const res = await fetch("/api/send-press-release", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ articleDraft, journalists }),
+        body: JSON.stringify({
+          headline: article.headline,
+          markdown: article.markdown,
+          industries: article.industries,
+          journalists,
+        }),
       });
+
       if (!res.ok) {
         const data = (await res.json()) as { error?: string };
         throw new Error(data.error ?? "Failed to send");
       }
+
+      await markSentMutation({ id: articleId });
       setArticleStatus("sent");
+
+      vapiRef.current?.send?.({
+        type: "add-message",
+        message: {
+          role: "system",
+          content:
+            "The user approved the article and it has been sent to the matching journalists. Congratulate them briefly.",
+        },
+      });
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : "Failed to send press release");
-      setArticleStatus("approved");
+      const message =
+        err instanceof Error ? err.message : "Failed to send press release";
+      setSendError(message);
+      setArticleStatus("ready");
     }
-  }, [articleDraft, journalists]);
+  }, [
+    article,
+    articleId,
+    approveArticleMutation,
+    journalists,
+    markSentMutation,
+  ]);
+
+  const handleReject = React.useCallback(
+    (feedback: string) => {
+      const vapi = vapiRef.current;
+      const note = feedback.trim();
+
+      vapi?.send?.({
+        type: "add-message",
+        message: {
+          role: "system",
+          content: `The user DISAPPROVED the draft. ${
+            note
+              ? `Their feedback: "${note}". `
+              : "They did not give specific feedback — ask them what to change. "
+          }Acknowledge briefly and then call createArticle again with a revised version that addresses every change.`,
+        },
+      });
+
+      setArticleStatus("rejected");
+      setArticleId(null);
+      setSendError(null);
+    },
+    [],
+  );
 
   if (!publicKey) {
     return <MissingKeyNotice />;
@@ -380,12 +580,15 @@ export function VoiceAssistant() {
         />
 
         <ArticlePreview
+          key={articleId ?? "none"}
           articleStatus={articleStatus}
-          articleDraft={articleDraft}
-          journalistCount={journalists.length}
+          headline={article?.headline ?? null}
+          markdown={article?.markdown ?? null}
+          industries={(article?.industries ?? []) as Industry[]}
+          journalists={journalists}
           sendError={sendError}
-          onApprove={() => setArticleStatus("approved")}
-          onSend={handleSend}
+          onApprove={handleApprove}
+          onReject={handleReject}
         />
       </CardContent>
     </Card>
@@ -472,9 +675,7 @@ function StatusPill({
   }
 
   return (
-    <Badge className="gap-1.5 rounded-none bg-white text-black">
-      Error
-    </Badge>
+    <Badge className="gap-1.5 rounded-none bg-white text-black">Error</Badge>
   );
 }
 
@@ -677,10 +878,7 @@ const Transcript = React.forwardRef<
           {transcript.length} {transcript.length === 1 ? "line" : "lines"}
         </span>
       </div>
-      <div
-        ref={ref}
-        className="flex h-64 flex-col gap-3 overflow-y-auto p-4"
-      >
+      <div ref={ref} className="flex h-64 flex-col gap-3 overflow-y-auto p-4">
         {transcript.map((line, i) => (
           <div
             key={i}
@@ -694,9 +892,7 @@ const Transcript = React.forwardRef<
             <span
               className={cn(
                 "text-[10px] font-semibold uppercase tracking-wider",
-                line.role === "user"
-                  ? "text-white/70"
-                  : "text-black/50",
+                line.role === "user" ? "text-white/70" : "text-black/50",
               )}
             >
               {line.role === "user" ? firstName : "Pressfy"}
@@ -709,21 +905,35 @@ const Transcript = React.forwardRef<
   );
 });
 
+type JournalistRecord = {
+  _id: string;
+  name: string;
+  email: string;
+  industry: Industry;
+};
+
 function ArticlePreview({
   articleStatus,
-  articleDraft,
-  journalistCount,
+  headline,
+  markdown,
+  industries,
+  journalists,
   sendError,
   onApprove,
-  onSend,
+  onReject,
 }: {
   articleStatus: ArticleStatus;
-  articleDraft: ArticleDraft | null;
-  journalistCount: number;
+  headline: string | null;
+  markdown: string | null;
+  industries: Industry[];
+  journalists: JournalistRecord[];
   sendError: string | null;
   onApprove: () => void;
-  onSend: () => void;
+  onReject: (feedback: string) => void;
 }) {
+  const [feedback, setFeedback] = React.useState("");
+  const [showFeedback, setShowFeedback] = React.useState(false);
+
   if (articleStatus === "none") return null;
 
   if (articleStatus === "generating") {
@@ -735,20 +945,37 @@ function ArticlePreview({
     );
   }
 
-  if (articleStatus === "sent") {
+  if (articleStatus === "rejected") {
     return (
-      <div className="flex items-center gap-3 border-2 border-black bg-[#fd5200] p-5 text-sm font-bold uppercase tracking-[0.14em] text-white">
-        <CircleCheckIcon className="size-4 shrink-0" />
-        <span>Your press release has been sent to {journalistCount} journalist{journalistCount !== 1 ? "s" : ""}!</span>
+      <div className="flex items-center gap-3 border-2 border-dashed border-black bg-white/50 p-5 text-sm font-medium uppercase tracking-[0.14em] text-black/60">
+        <LoaderIcon className="size-4 shrink-0 animate-spin text-[#fd5200]" />
+        <span>Revising your draft based on your feedback…</span>
       </div>
     );
   }
 
-  if (!articleDraft) return null;
+  const matchingJournalists = journalists.filter((j) =>
+    industries.includes(j.industry),
+  );
 
-  const { headline, subheadline, body, quote, quotePerson } = articleDraft;
-  const isApproved = articleStatus === "approved" || articleStatus === "sending";
+  if (articleStatus === "sent") {
+    return (
+      <div className="flex items-center gap-3 border-2 border-black bg-[#fd5200] p-5 text-sm font-bold uppercase tracking-[0.14em] text-white">
+        <CircleCheckIcon className="size-4 shrink-0" />
+        <span>
+          Sent to {matchingJournalists.length} journalist
+          {matchingJournalists.length !== 1 ? "s" : ""} across{" "}
+          {industries.length > 0 ? industries.join(" + ") : "no industries"}.
+        </span>
+      </div>
+    );
+  }
+
+  if (!headline || !markdown) return null;
+
   const isSending = articleStatus === "sending";
+  const isApprovedView =
+    articleStatus === "approved" || articleStatus === "sending";
 
   return (
     <div className="overflow-hidden border-2 border-black bg-white/60">
@@ -757,7 +984,7 @@ function ArticlePreview({
           <FileTextIcon className="size-4 text-[#fd5200]" />
           Press release draft
         </div>
-        {isApproved ? (
+        {isApprovedView ? (
           <Badge
             variant="outline"
             className="gap-1.5 rounded-none border-white/40 text-white"
@@ -766,76 +993,133 @@ function ArticlePreview({
             Approved
           </Badge>
         ) : (
-          <Badge variant="outline" className="rounded-none border-white/40 text-white/70">
-            Awaiting approval
+          <Badge
+            variant="outline"
+            className="rounded-none border-white/40 text-white/70"
+          >
+            Awaiting review
           </Badge>
         )}
       </div>
 
       <div className="flex flex-col gap-4 p-5">
-        <div className="flex flex-col gap-1">
-          <h3 className="text-xl font-bold uppercase leading-tight tracking-tight">
-            {headline}
-          </h3>
-          {subheadline ? (
-            <p className="text-sm leading-relaxed text-black/60">{subheadline}</p>
-          ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-black/50">
+            Target industries
+          </span>
+          {industries.length === 0 ? (
+            <Badge
+              variant="outline"
+              className="rounded-none border-black text-black/60"
+            >
+              None selected
+            </Badge>
+          ) : (
+            industries.map((industry) => (
+              <Badge
+                key={industry}
+                className="rounded-none bg-black text-white"
+              >
+                {industry} ·{" "}
+                {
+                  journalists.filter((j) => j.industry === industry).length
+                }{" "}
+                contacts
+              </Badge>
+            ))
+          )}
         </div>
 
-        <div className="flex flex-col gap-2 text-sm leading-relaxed text-black/80">
-          {body.split("\n").filter(Boolean).map((para, i) => (
-            <p key={i}>{para}</p>
-          ))}
+        <div className="prose prose-sm max-w-none border-2 border-black bg-white p-5 text-black prose-headings:font-bold prose-headings:uppercase prose-headings:tracking-tight prose-h1:text-2xl prose-h1:leading-tight prose-h2:text-lg prose-p:leading-relaxed prose-blockquote:border-l-4 prose-blockquote:border-[#fd5200] prose-blockquote:pl-4 prose-blockquote:italic prose-blockquote:text-black/70 prose-strong:text-black">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
         </div>
-
-        {quote ? (
-          <blockquote className="border-l-4 border-[#fd5200] pl-4 text-sm italic text-black/70">
-            <p>&ldquo;{quote}&rdquo;</p>
-            {quotePerson ? (
-              <footer className="mt-1 text-xs font-bold uppercase tracking-[0.14em] not-italic text-black">
-                — {quotePerson}
-              </footer>
-            ) : null}
-          </blockquote>
-        ) : null}
 
         {sendError ? (
-          <p className="text-xs font-medium text-destructive">{sendError}</p>
+          <p className="border-2 border-destructive bg-destructive/10 p-3 text-xs font-medium text-destructive">
+            {sendError}
+          </p>
         ) : null}
 
-        <div className="flex items-center gap-3 pt-1">
-          {!isApproved ? (
-            <Button
-              onClick={onApprove}
-              className="gap-2 rounded-none bg-black font-bold uppercase tracking-[0.16em] text-white hover:bg-black/80"
-            >
-              <CheckIcon className="size-4" />
-              Approve article
-            </Button>
-          ) : (
-            <Button
-              onClick={onSend}
-              disabled={isSending}
-              className="gap-2 rounded-none bg-[#fd5200] font-bold uppercase tracking-[0.16em] text-white hover:bg-[#e04a00] disabled:opacity-60"
-            >
-              {isSending ? (
+        {!isApprovedView ? (
+          <>
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <Button
+                onClick={onApprove}
+                disabled={industries.length === 0 || matchingJournalists.length === 0}
+                className="gap-2 rounded-none bg-[#fd5200] font-bold uppercase tracking-[0.16em] text-white hover:bg-[#e04a00] disabled:opacity-60"
+              >
+                <CheckIcon className="size-4" />
+                Approve &amp; send to {matchingJournalists.length} journalist
+                {matchingJournalists.length !== 1 ? "s" : ""}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setShowFeedback((s) => !s)}
+                className="gap-2 rounded-none border-2 border-black bg-white font-bold uppercase tracking-[0.16em] text-black hover:bg-black hover:text-white"
+              >
+                <XIcon className="size-4" />
+                Disapprove &amp; revise
+              </Button>
+            </div>
+
+            {industries.length === 0 ? (
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-black/50">
+                The AI selected no industries for this story — ask it to widen
+                the scope or disapprove to revise.
+              </p>
+            ) : null}
+
+            {showFeedback ? (
+              <div className="flex flex-col gap-3 border-2 border-dashed border-black p-4">
+                <label
+                  htmlFor="reject-feedback"
+                  className="text-[10px] font-bold uppercase tracking-[0.18em] text-black/60"
+                >
+                  What should change?
+                </label>
+                <textarea
+                  id="reject-feedback"
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
+                  placeholder="e.g. punchier headline, drop the metric in paragraph 2, change the quote to come from the CTO…"
+                  rows={3}
+                  className="resize-none border-2 border-black bg-white p-3 text-sm leading-relaxed text-black focus:outline-none focus:ring-2 focus:ring-[#fd5200]"
+                />
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => onReject(feedback)}
+                    className="gap-2 rounded-none bg-black font-bold uppercase tracking-[0.16em] text-white hover:bg-black/80"
+                  >
+                    <RotateCcwIcon className="size-4" />
+                    Send feedback &amp; regenerate
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setShowFeedback(false)}
+                    className="rounded-none font-bold uppercase tracking-[0.16em] text-black/60 hover:bg-transparent hover:text-black"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <div className="flex items-center gap-3 pt-1">
+            {isSending ? (
+              <Badge className="gap-2 rounded-none bg-black px-3 py-2 text-white">
                 <LoaderIcon className="size-4 animate-spin" />
-              ) : (
+                Sending…
+              </Badge>
+            ) : (
+              <Badge className="gap-2 rounded-none bg-[#fd5200] px-3 py-2 text-white">
                 <SendIcon className="size-4" />
-              )}
-              {isSending ? "Sending…" : `Send to ${journalistCount} journalist${journalistCount !== 1 ? "s" : ""}`}
-            </Button>
-          )}
-          {!isApproved ? (
-            <p className="text-xs font-medium uppercase tracking-[0.14em] text-black/50">
-              Review the draft above and approve it to send.
-            </p>
-          ) : !isSending ? (
-            <p className="text-xs font-medium uppercase tracking-[0.14em] text-black/50">
-              Press release approved. Click Send when ready.
-            </p>
-          ) : null}
-        </div>
+                Delivering to {matchingJournalists.length} journalist
+                {matchingJournalists.length !== 1 ? "s" : ""}
+              </Badge>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
