@@ -16,6 +16,16 @@ export default function LandingPage() {
     }
   }, [isLoaded, isSignedIn, router]);
 
+  if (!isLoaded || isSignedIn) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-black text-white">
+        <p className="text-sm font-bold uppercase tracking-[0.2em]">
+          Loading...
+        </p>
+      </main>
+    );
+  }
+
   const showAuthButtons = isLoaded && !isSignedIn;
 
   return (

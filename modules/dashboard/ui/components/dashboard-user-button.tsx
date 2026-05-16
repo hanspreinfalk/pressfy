@@ -67,23 +67,23 @@ export function DashboardUserButton() {
           <SidebarMenuButton
             size="lg"
             tooltip={displayName}
-            className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+            className="rounded-none text-white hover:bg-white/10 hover:text-white data-[state=open]:bg-white/10 data-[state=open]:text-white"
           >
             {isLoaded && user ? (
-              <Avatar className="size-8 rounded-lg">
+              <Avatar className="size-8 rounded-none">
                 <AvatarImage src={user.imageUrl} alt={displayName} />
-                <AvatarFallback className="rounded-lg text-xs">
+                <AvatarFallback className="rounded-none bg-[#fd5200] text-xs font-bold text-white">
                   {userInitials(user)}
                 </AvatarFallback>
               </Avatar>
             ) : (
-              <Skeleton className="size-8 shrink-0 rounded-lg" />
+              <Skeleton className="size-8 shrink-0 rounded-none" />
             )}
             <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
               {isLoaded ? (
                 <>
-                  <span className="truncate font-semibold">{displayName}</span>
-                  <span className="truncate text-xs text-muted-foreground">
+                  <span className="truncate font-bold">{displayName}</span>
+                  <span className="truncate text-xs text-white/50">
                     {email}
                   </span>
                 </>
@@ -94,7 +94,7 @@ export function DashboardUserButton() {
                 </>
               )}
             </div>
-            <ChevronsUpDownIcon className="ml-auto size-4 shrink-0 text-sidebar-foreground/50" />
+            <ChevronsUpDownIcon className="ml-auto size-4 shrink-0 text-white/50" />
           </SidebarMenuButton>
         </DropdownMenuTrigger>
         <DropdownMenuContent

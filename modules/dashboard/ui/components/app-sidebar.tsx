@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BriefcaseIcon, UsersRoundIcon } from "lucide-react";
+import { HomeIcon } from "lucide-react";
 
 import {
   Sidebar,
@@ -25,8 +25,7 @@ const navGroups = [
   {
     label: "Dashboard",
     items: [
-      { title: "Clients", icon: UsersRoundIcon, href: "/clients" },
-      { title: "Workflows", icon: BriefcaseIcon, href: "/workflows" },
+      { title: "Home", icon: HomeIcon, href: "/dashboard" },
     ],
   },
 ];
@@ -43,23 +42,23 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   };
 
   const activeClass =
-    "bg-black! text-white! font-medium! dark:bg-white! dark:text-black!";
+    "bg-[#fd5200]! text-white! font-bold! dark:bg-[#fd5200]! dark:text-white!";
 
   return (
     <Sidebar
       collapsible="icon"
-      className="group border-r border-sidebar-border"
+      className="group border-r-2 border-black"
       {...props}
     >
-      <SidebarHeader className="pt-3">
+      <SidebarHeader className="border-b-2 border-black bg-black pt-3 text-white">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild size="lg">
               <Link href="/dashboard" className="flex items-center gap-2">
-                <div className="flex size-5 shrink-0 items-center justify-center rounded-sm bg-[#fd5200]">
+                <div className="flex size-5 shrink-0 items-center justify-center bg-[#fd5200]">
                   <span className="text-[10px] font-black text-white leading-none">P</span>
                 </div>
-                <span className="font-bold tracking-tight text-sidebar-foreground group-data-[collapsible=icon]:hidden">
+                <span className="font-bold uppercase tracking-[0.18em] text-white group-data-[collapsible=icon]:hidden">
                   Pressfy
                 </span>
               </Link>
@@ -68,10 +67,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
 
-      <SidebarContent className="gap-0 py-2">
+      <SidebarContent className="gap-0 bg-[#F5F0E8] py-2">
         {navGroups.map((group) => (
           <SidebarGroup key={group.label} className="py-2">
-            <SidebarGroupLabel className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+            <SidebarGroupLabel className="mb-1 px-2 text-[10px] font-bold uppercase tracking-widest text-black/50">
               {group.label}
             </SidebarGroupLabel>
             <SidebarGroupContent>
@@ -83,7 +82,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                       tooltip={item.title}
                       isActive={isActive(item.href)}
                       className={cn(
-                        "text-sm text-sidebar-foreground/80 transition-colors",
+                        "rounded-none text-sm font-bold uppercase tracking-[0.14em] text-black transition-colors hover:bg-black hover:text-white",
                         isActive(item.href) && activeClass,
                       )}
                     >
@@ -100,7 +99,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         ))}
       </SidebarContent>
 
-      <SidebarFooter className="py-3">
+      <SidebarFooter className="border-t-2 border-black bg-black py-3 text-white">
         <SidebarMenu>
           <SidebarMenuItem>
             <DashboardUserButton />
